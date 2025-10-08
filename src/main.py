@@ -14,6 +14,7 @@ game = Game(screen)
 while True:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
+            
             pygame.quit()
             sys.exit()
         # delegate most key handling to the Game (menus / gameover)
@@ -22,6 +23,10 @@ while True:
             if getattr(game, 'request_quit', False):
                 pygame.quit()
                 sys.exit()
+        # forward mouse motion for hover effects
+        elif event.type == pygame.MOUSEMOTION:
+            if hasattr(game, 'handle_mouse_motion'):
+                game.handle_mouse_motion(event)
         # forward mouse clicks to the game (e.g. sound icon in main menu)
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if hasattr(game, 'handle_mouse'):

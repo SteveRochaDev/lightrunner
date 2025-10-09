@@ -20,8 +20,9 @@ class Game:
     def __init__(self, screen):
         self.screen = screen
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 36)
-        self.large_font = pygame.font.Font(None, 72)
+        # slightly larger fonts for improved readability
+        self.font = pygame.font.Font(None, 40)
+        self.large_font = pygame.font.Font(None, 84)
 
         self.game_state = STATE_START
         self.player = Player(WIDTH//2, HEIGHT//2)
@@ -200,7 +201,330 @@ class Game:
         except Exception as e:
             print("⚠️ High score save issue:", e)
 
+    def get_current_cooldown(self):
+        """Return the current shoot cooldown in frames, accounting for active buffs.
+        Called from the gameplay update/shooting logic.
+        """
+        try:
+            cd = int(self.base_shoot_cooldown)
+            # rapid_fire halves cooldown (but keep at least 2 frames)
+            if self.active_buffs.get('rapid_fire', 0) > 0:
+                cd = max(2, int(cd * 0.5))
+            return cd
+        except Exception:
+            return int(self.SHOOT_COOLDOWN)
+
+    def apply_powerup(self, powerup):
+        """Apply effects from a PowerUp and create a rich UI notification.
+        Stores both remaining frames in self.active_buffs and the original total in
+        self.active_buff_totals to render progress bars. Creates a top-centered
+        notification with icon, name and slide/fade animation.
+        """
+        try:
+            kind = getattr(powerup, 'kind', None)
+            if not kind:
+                return
+            # ensure helper structures exist
+            if not hasattr(self, 'powerup_notifications'):
+                self.powerup_notifications = []  # list of dicts: {kind, text, timer, alpha, y}
+            if not hasattr(self, 'active_buff_totals'):
+                self.active_buff_totals = {}
+
+            if kind == 'health':
+                # instant heal
+                self.player.energy = min(100, getattr(self.player, 'energy', 100) + 35)
+                note_text = 'Health Restored'
+                note_icon = '+'
+                note_color = (80,200,120)
+                note_dur = 0
+            else:
+                # timed buff
+                duration = getattr(powerup, 'duration', 5)
+                frames = int(duration * 60)
+                self.active_buffs[kind] = frames
+                self.active_buff_totals[kind] = frames
+                note_text = kind.replace('_', ' ').title()
+                # simple icons / colors mapping
+                mapping = {
+                    'rapid_fire': ('R', (255,180,50)),
+                    'shield': ('S', (100,200,255)),
+                    'speed': ('V', (200,120,255)),
+                    'damage': ('D', (255,100,120))
+                }
+                note_icon, note_color = mapping.get(kind, ('?', (200,200,200)))
+                note_dur = frames
+                # immediate effects
+                if kind == 'shield':
+                    self.player_invulnerable = True
+                elif kind == 'speed':
+                    try:
+                        self.player.speed = min(12, self.player.speed + 2)
+                    except Exception:
+                        pass
+                elif kind == 'damage':
+                    self.projectile_damage = max(1, int(self.base_projectile_damage * 2))
+                # rapid_fire handled dynamically via get_current_cooldown
+
+            # add a notification (top-center) that slides down then fades
+            self.powerup_notifications.insert(0, {
+                'kind': kind,
+                'text': note_text,
+                'icon': note_icon,
+                'color': note_color,
+                'timer': 180,      # frames to show (~3s)
+                'alpha': 0,
+                'y': -36
+            })
+
+            # celebratory confetti at player
+            try:
+                px = int(self.player.x + getattr(self.player, 'width', 24) // 2)
+                py = int(self.player.y + getattr(self.player, 'height', 24) // 2)
+                self.particles.burst_confetti(px, py, count=30)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def draw_hud(self, surface=None):
+        try:
+            surf = surface if surface is not None else self.screen
+            # Energy bar (top-left)
+            eb_w, eb_h = 220, 14
+            ex, ey = 16, 12
+            try:
+                pygame.draw.rect(surf, (22,22,24), (ex, ey, eb_w, eb_h), border_radius=6)
+                fill_w = int(((getattr(self.player, 'energy', 100) or 0) / 100.0) * (eb_w - 4))
+                pygame.draw.rect(surf, (80,200,120), (ex + 2, ey + 2, max(0, fill_w), eb_h - 4), border_radius=6)
+                e_txt = self.font.render(f"Energy: {int(getattr(self.player, 'energy', 0))}", True, (230,230,230))
+                surf.blit(e_txt, (ex + 6, ey + eb_h + 6))
+            except Exception:
+                pass
+
+            # Score / Orbs (top-right)
+            try:
+                score_s = self.font.render(f"Score: {self.score}", True, (240,240,220))
+                orbs_s = self.font.render(f"Orbs: {self.orbs_collected}", True, (180,220,255))
+                sx = WIDTH - score_s.get_width() - 18
+                surf.blit(score_s, (sx, 12))
+                surf.blit(orbs_s, (sx, 12 + score_s.get_height() + 6))
+            except Exception:
+                pass
+
+            # Active buffs (bottom-left) with progress bars
+            try:
+                bx = 16
+                by = HEIGHT - 120
+                line_h = 28
+                small_font = pygame.font.Font(None, 20)
+                i = 0
+                for k, rem in list(getattr(self, 'active_buffs', {}).items()):
+                    total = getattr(self, 'active_buff_totals', {}).get(k, max(1, rem))
+                    icon_w = 36
+                    label_w = 120
+                    padding = 10
+                    # compute bar width so row fits on screen
+                    max_row_w = WIDTH - 32 - bx
+                    bar_w = max(60, min(160, max_row_w - (icon_w + label_w + padding)))
+                    ix = bx
+                    iy = by + i * line_h
+                    row_w = min(max_row_w, icon_w + label_w + bar_w + padding*2)
+                    # background row
+                    pygame.draw.rect(surf, (18,18,22), (ix, iy, row_w, 22), border_radius=6)
+                    # icon
+                    mapping = {
+                        'rapid_fire': ('R', (255,180,50)),
+                        'shield': ('S', (100,200,255)),
+                        'speed': ('V', (200,120,255)),
+                        'damage': ('D', (255,100,120))
+                    }
+                    icon_letter, icon_col = mapping.get(k, (k[0].upper() if k else '?', (200,200,200)))
+                    try:
+                        pygame.draw.circle(surf, icon_col, (ix+14, iy+11), 8)
+                    except Exception:
+                        pass
+                    # label
+                    lbl = small_font.render(k.replace('_',' ').title(), True, (240,240,240))
+                    surf.blit(lbl, (ix+32, iy+2))
+                    # progress bar
+                    bar_x = ix + icon_w + label_w - 12
+                    max_bar_w = max(48, min(bar_w, WIDTH - (bar_x + 80)))
+                    pygame.draw.rect(surf, (40,40,48), (bar_x, iy+4, max_bar_w, 14), border_radius=6)
+                    ratio = max(0.0, min(1.0, rem / float(total))) if total > 0 else 0.0
+                    pygame.draw.rect(surf, (120,200,255), (bar_x+2, iy+6, int((max_bar_w-4)*ratio), 10), border_radius=6)
+                    # time label clamped
+                    seconds = rem / 60.0
+                    time_lbl = small_font.render(f"{seconds:.1f}s", True, (220,220,220))
+                    time_x = bar_x + max_bar_w + 8
+                    if time_x + time_lbl.get_width() > WIDTH - 12:
+                        time_x = WIDTH - 12 - time_lbl.get_width()
+                    surf.blit(time_lbl, (time_x, iy+2))
+                    i += 1
+            except Exception:
+                pass
+
+            # Top-Center notifications (recent pickups) - clamped fully on screen
+            try:
+                if not hasattr(self, 'powerup_notifications'):
+                    return
+                max_w = min(420, WIDTH - 40)
+                notif_font = pygame.font.Font(None, 24)
+                spacing = 6
+                for idx, n in enumerate(list(self.powerup_notifications)):
+                    t = n.get('timer', 0)
+                    alpha = int(255 * (min(1.0, t / 180.0)))
+                    target_y = 12 + idx * (34 + spacing)
+                    n['y'] = int(n.get('y', -36) + (target_y - n.get('y', -36)) * 0.22)
+                    box_h = 34
+                    box_w = max(160, max_w)
+                    box = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+                    box.fill((12,12,16, int(220 * (alpha/255.0))))
+                    try:
+                        pygame.draw.rect(box, n.get('color',(200,200,200)), (8, 6, 22, 22), border_radius=6)
+                        ic = notif_font.render(str(n.get('icon','?')), True, (18,18,20))
+                        box.blit(ic, (12, 6))
+                    except Exception:
+                        pass
+                    # text with ellipsis if too wide
+                    raw_text = n.get('text','')
+                    txt = notif_font.render(raw_text, True, (240,240,240))
+                    max_text_w = box_w - 64
+                    if txt.get_width() > max_text_w:
+                        text_str = raw_text
+                        while notif_font.size(text_str + '...')[0] > max_text_w and len(text_str) > 0:
+                            text_str = text_str[:-1]
+                        txt = notif_font.render(text_str + '...', True, (240,240,240))
+                    box.blit(txt, (44, 6))
+                    sx = max(12, min(WIDTH - box_w - 12, WIDTH//2 - box_w//2))
+                    surf.blit(box, (sx, n['y']))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def draw(self):
+        """Main render entry. Keeps drawing simple and defensive so the game
+        always has a draw implementation even if other parts are incomplete.
+        """
+        try:
+            # clear background
+            self.screen.fill((10, 10, 30))
+
+            if self.game_state == STATE_START:
+                try:
+                    # title
+                    title_surf = self.large_font.render("LightRunner", True, (255, 220, 40))
+                    tr = title_surf.get_rect(center=(WIDTH//2, HEIGHT//6))
+                    self.screen.blit(title_surf, tr)
+                    # high score
+                    hs = self.font.render(f"High Score: {self.high_score}", True, (220,220,200))
+                    self.screen.blit(hs, (WIDTH//2 - hs.get_width()//2, tr.bottom + 8))
+                    # menu
+                    start_y = HEIGHT//3
+                    for i, opt in enumerate(getattr(self, 'menu_options', [])):
+                        is_sel = (i == getattr(self, 'selected_menu', 0))
+                        col = (255,255,255) if is_sel else (180,180,180)
+                        txt = self.font.render(opt, True, col)
+                        tx = WIDTH//2 - txt.get_width()//2
+                        ty = start_y + i * 48
+                        # background for selected
+                        if is_sel:
+                            try:
+                                pygame.draw.rect(self.screen, (22,22,26), (tx-12, ty-6, txt.get_width()+24, txt.get_height()+12), border_radius=8)
+                            except Exception:
+                                pass
+                        self.screen.blit(txt, (tx, ty))
+                    # simple hint
+                    try:
+                        hint_font = pygame.font.Font(None, 22)
+                        h1 = hint_font.render("Use Up/Down to navigate", True, (200,200,200))
+                        h2 = hint_font.render("Use the mouse to attack enemies", True, (200,200,200))
+                        self.screen.blit(h1, (WIDTH//2 - h1.get_width()//2, HEIGHT - 64))
+                        self.screen.blit(h2, (WIDTH//2 - h2.get_width()//2, HEIGHT - 44))
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            elif self.game_state == STATE_PLAYING:
+                try:
+                    # draw orb
+                    try:
+                        self.orb.draw(self.screen)
+                    except Exception:
+                        pass
+                    # draw obstacles
+                    for ob in list(getattr(self, 'obstacles', [])):
+                        try:
+                            ob.draw(self.screen)
+                        except Exception:
+                            pass
+                    # draw projectiles
+                    for p in list(getattr(self, 'projectiles', [])):
+                        try:
+                            p.draw(self.screen)
+                        except Exception:
+                            pass
+                    # draw player (on top)
+                    try:
+                        self.player.draw(self.screen)
+                    except Exception:
+                        pass
+                    # particles
+                    try:
+                        # particles are drawn during their update; call update with no effect if needed
+                        pass
+                    except Exception:
+                        pass
+                    # HUD
+                    try:
+                        self.draw_hud(self.screen)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            elif self.game_state == STATE_GAMEOVER:
+                try:
+                    go = self.large_font.render("Game Over", True, (255,80,80))
+                    self.screen.blit(go, (WIDTH//2 - go.get_width()//2, HEIGHT//4))
+                    sc = self.font.render(f"Score: {self.score}", True, (255,255,255))
+                    self.screen.blit(sc, (WIDTH//2 - sc.get_width()//2, HEIGHT//4 + 80))
+                    # options
+                    start_y = HEIGHT//2
+                    for i, opt in enumerate(getattr(self, 'gameover_options', [])):
+                        is_sel = (i == getattr(self, 'selected_menu_gameover', 0))
+                        col = (255,255,255) if is_sel else (180,180,180)
+                        txt = self.font.render(opt, True, col)
+                        tx = WIDTH//2 - txt.get_width()//2
+                        ty = start_y + i * 48
+                        if is_sel:
+                            try:
+                                pygame.draw.rect(self.screen, (22,22,26), (tx-12, ty-6, txt.get_width()+24, txt.get_height()+12), border_radius=8)
+                            except Exception:
+                                pass
+                        self.screen.blit(txt, (tx, ty))
+                    # show HUD overlay too
+                    try:
+                        self.draw_hud(self.screen)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            # ensure particles are drawn on top
+            try:
+                # particle system draws during update; call update with current surface to render remaining particles
+                self.particles.update(self.screen, WIDTH, HEIGHT)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def update(self):
+        """Per-frame housekeeping for timers, buff expiry and particle updates.
+        This augments gameplay update logic and keeps the powerup UI in sync.
+        """
         keys = pygame.key.get_pressed()
 
         # Shooting input: left mouse or spacebar
@@ -387,21 +711,47 @@ class Game:
                         pass
 
         # Active buffs expiration (decrement timers and cleanup)
-        for k in list(self.active_buffs.keys()):
-            self.active_buffs[k] -= 1
-            if self.active_buffs[k] <= 0:
-                # expire effect
-                if k == 'shield':
-                    self.player_invulnerable = False
-                elif k == 'speed':
+        expired = []
+        try:
+            for k in list(self.active_buffs.keys()):
+                try:
+                    self.active_buffs[k] -= 1
+                except Exception:
+                    # if value corrupted, schedule removal
+                    expired.append(k)
+                    continue
+                if self.active_buffs[k] <= 0:
+                    expired.append(k)
+            for k in expired:
+                try:
+                    # revert any one-time changes
+                    if k == 'shield':
+                        self.player_invulnerable = False
+                    elif k == 'speed':
+                        try:
+                            # best-effort revert: subtract the boost we applied earlier
+                            self.player.speed = max(3, getattr(self.player, 'speed', 5) - 2)
+                        except Exception:
+                            pass
+                    elif k == 'damage':
+                        self.projectile_damage = int(self.base_projectile_damage)
+                    elif k == 'rapid_fire':
+                        # nothing to revert besides timer
+                        pass
+                    # cleanup bookkeeping
+                    if hasattr(self, 'active_buff_totals') and k in self.active_buff_totals:
+                        try:
+                            del self.active_buff_totals[k]
+                        except Exception:
+                            pass
                     try:
-                        self.player.speed = max(1, self.player.speed - 3)
+                        del self.active_buffs[k]
                     except Exception:
                         pass
-                elif k == 'damage':
-                    self.projectile_damage = self.base_projectile_damage
-                # remove key
-                del self.active_buffs[k]
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         # Decrease new-high timer
         if self.new_high_timer > 0:
@@ -422,624 +772,209 @@ class Game:
             if self.overlay_alpha == 0:
                 self.show_overlay = False
 
-    def draw_hud(self, surface=None):
-        target = surface if surface is not None else self.screen
-        # Energy bar
-        bar_width, bar_height = 200, 20
-        pygame.draw.rect(target, (50,50,50), (10,10,bar_width,bar_height))
-        current_width = int((self.player.energy/100)*bar_width)
-        pygame.draw.rect(target, (0,255,0), (10,10,current_width,bar_height))
-
-        # Score / Orbs
-        score_text = self.font.render(f"Score: {self.score}", True, (255,255,255))
-        orbs_text = self.font.render(f"Orbs: {self.orbs_collected}", True, (0,255,255))
-        target.blit(score_text, (10,40))
-        target.blit(orbs_text, (10,70))
-
-        # High score (top-right)
-        high_text = self.font.render(f"High: {self.high_score}", True, (255,215,0))
-        target.blit(high_text, (WIDTH - high_text.get_width() - 10, 10))
-
-        # Active power-up/buff icons (top-right, below high score)
-        x = WIDTH - 10
-        y = 40
-        if hasattr(self, 'active_buffs') and self.active_buffs:
-            for i, (k, t) in enumerate(self.active_buffs.items()):
-                # small icon box
-                box_w = 80
-                box_h = 20
-                bx = x - box_w
-                by = y + i * (box_h + 6)
-                pygame.draw.rect(target, (30,30,30), (bx, by, box_w, box_h), border_radius=6)
-                pygame.draw.rect(target, (80,80,100), (bx, by, box_w, box_h), width=1, border_radius=6)
-                # label and timer
-                lbl = self.font.render(f"{k} {int(t/60)}s", True, (220,220,220))
-                target.blit(lbl, (bx + 6, by + 2))
+        # --- cleanup top-center powerup notifications so they disappear when timer ends ---
+        try:
+            if hasattr(self, 'powerup_notifications') and isinstance(self.powerup_notifications, list):
+                for n in list(self.powerup_notifications):
+                    try:
+                        n['timer'] = n.get('timer', 0) - 1
+                        if n['timer'] <= 0:
+                            try:
+                                self.powerup_notifications.remove(n)
+                            except Exception:
+                                pass
+                    except Exception:
+                        # if a notification is malformed, remove it
+                        try:
+                            self.powerup_notifications.remove(n)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
     def handle_event(self, event):
-        """Handle key events for menus, settings and game states."""
-        if event.type != pygame.KEYDOWN:
-            return
-
-        # If Settings overlay is open, let it handle keys first
-        if self.show_settings:
-            old_idx = self.settings_selected
-            if event.key in (pygame.K_UP, pygame.K_w):
-                self.settings_selected = (self.settings_selected - 1) % len(self.settings_options)
-                self.hovered_settings = self.settings_selected
-            elif event.key in (pygame.K_DOWN, pygame.K_s):
-                self.settings_selected = (self.settings_selected + 1) % len(self.settings_options)
-                self.hovered_settings = self.settings_selected
-            elif event.key in (pygame.K_LEFT,):
-                # decrement currently selected setting
-                opt = self.settings_options[self.settings_selected]
-                if opt == "Music Volume":
-                    self.music_volume = max(0.0, round((self.music_volume - 0.1), 2))
-                    try:
-                        pygame.mixer.music.set_volume(self.music_volume)
-                    except Exception:
-                        pass
-                elif opt == "Difficulty":
-                    self.difficulty_index = (self.difficulty_index - 1) % len(self.difficulty_levels)
-                    self.apply_difficulty_settings()
-                elif opt == "Player Color":
-                    self.player_color_index = (self.player_color_index - 1) % len(self.player_colors)
-                    try:
-                        self.player.color = self.player_colors[self.player_color_index]
-                    except Exception:
-                        pass
-            elif event.key in (pygame.K_RIGHT,):
-                # increment currently selected setting
-                opt = self.settings_options[self.settings_selected]
-                if opt == "Music Volume":
-                    self.music_volume = min(1.0, round((self.music_volume + 0.1), 2))
-                    try:
-                        pygame.mixer.music.set_volume(self.music_volume)
-                    except Exception:
-                        pass
-                elif opt == "Difficulty":
-                    self.difficulty_index = (self.difficulty_index + 1) % len(self.difficulty_levels)
-                    self.apply_difficulty_settings()
-                elif opt == "Player Color":
-                    self.player_color_index = (self.player_color_index + 1) % len(self.player_colors)
-                    try:
-                        self.player.color = self.player_colors[self.player_color_index]
-                    except Exception:
-                        pass
-            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                opt = self.settings_options[self.settings_selected]
-                if getattr(self, 'confirm_sound', None):
-                    try:
-                        self.confirm_sound.play()
-                    except Exception:
-                        pass
-                if opt == "Music Volume":
-                    self.music_volume = min(1.0, round((self.music_volume + 0.1), 2))
-                    try:
-                        pygame.mixer.music.set_volume(self.music_volume)
-                    except Exception:
-                        pass
-                elif opt == "Difficulty":
-                    self.difficulty_index = (self.difficulty_index + 1) % len(self.difficulty_levels)
-                    self.apply_difficulty_settings()
-                elif opt == "Player Color":
-                    self.player_color_index = (self.player_color_index + 1) % len(self.player_colors)
-                    try:
-                        self.player.color = self.player_colors[self.player_color_index]
-                    except Exception:
-                        pass
-                elif opt == "Back":
-                    self.show_settings = False
-                    self.overlay_target_alpha = 0
-                    self.hovered_settings = None
-            elif event.key == pygame.K_ESCAPE:
-                # close settings
-                self.show_settings = False
-                self.overlay_target_alpha = 0
-                self.hovered_settings = None
-            if old_idx != self.settings_selected and getattr(self, 'navigate_sound', None):
-                try:
-                    self.navigate_sound.play()
-                except Exception:
-                    pass
-            return
-
-        # Start/menu screen input (only if settings not open)
-        if self.game_state == STATE_START:
-            old = self.selected_menu
-            if event.key in (pygame.K_UP, pygame.K_w):
-                self.selected_menu = (self.selected_menu - 1) % len(self.menu_options)
-                self.hovered_menu = self.selected_menu
-            elif event.key in (pygame.K_DOWN, pygame.K_s):
-                self.selected_menu = (self.selected_menu + 1) % len(self.menu_options)
-                self.hovered_menu = self.selected_menu
-            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                choice = self.menu_options[self.selected_menu]
-                if getattr(self, 'confirm_sound', None):
-                    try:
-                        self.confirm_sound.play()
-                    except Exception:
-                        pass
-                if choice == "Start Game":
-                    self.game_state = STATE_PLAYING
-                    self.reset()
-                elif choice == "Settings":
-                    self.show_settings = True
-                    self.overlay_target_alpha = 220
-                    self.settings_selected = 0
-                    self.hovered_settings = 0
-                elif choice == "Quit":
-                    self.request_quit = True
-            elif event.key == pygame.K_ESCAPE:
-                pass
-            if old != self.selected_menu and getattr(self, 'navigate_sound', None):
-                try:
-                    self.navigate_sound.play()
-                except Exception:
-                    pass
-            return
-
-        # Handle input when on the gameover screen
-        if self.game_state == STATE_GAMEOVER:
-            old = self.selected_menu_gameover
-            if event.key in (pygame.K_UP, pygame.K_w):
-                self.selected_menu_gameover = (self.selected_menu_gameover - 1) % len(self.gameover_options)
-                self.hovered_gameover = self.selected_menu_gameover
-            elif event.key in (pygame.K_DOWN, pygame.K_s):
-                self.selected_menu_gameover = (self.selected_menu_gameover + 1) % len(self.gameover_options)
-                self.hovered_gameover = self.selected_menu_gameover
-            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                choice = self.gameover_options[self.selected_menu_gameover]
-                if getattr(self, 'confirm_sound', None):
-                    try:
-                        self.confirm_sound.play()
-                    except Exception:
-                        pass
-                if choice == "Restart":
-                    self.game_state = STATE_PLAYING
-                    self.reset()
-                elif choice == "Main Menu":
-                    self.game_state = STATE_START
-                    self.selected_menu = 0
-                    self.hovered_menu = 0
-                elif choice == "Quit":
-                    self.request_quit = True
-            elif event.key == pygame.K_ESCAPE:
+        """Handle KEYDOWN for menu navigation and activation.
+        Safe to call from the main loop.
+        """
+        try:
+            if event.type != pygame.KEYDOWN:
+                return
+            k = event.key
+            # Global back/escape handling
+            if k == pygame.K_ESCAPE:
+                # if in settings overlay, close it; otherwise go to main menu
+                if getattr(self, 'show_overlay', False):
+                    self.show_overlay = False
+                    return
                 self.game_state = STATE_START
-                self.selected_menu = 0
-                self.hovered_menu = 0
-            if old != self.selected_menu_gameover and getattr(self, 'navigate_sound', None):
-                try:
-                    self.navigate_sound.play()
-                except Exception:
-                    pass
-            return
-
-        # Playing state shortcuts
-        if self.game_state == STATE_PLAYING:
-            if event.key in (pygame.K_p,):
-                self.game_state = STATE_START
-            elif event.key in (pygame.K_m,):
-                # quick toggle music
-                self.toggle_music()
-            elif event.key in (pygame.K_r,):
-                self.reset()
-
-    def handle_mouse(self, event):
-        """Handle mouse clicks for menu items, settings and the sound icon."""
-        if event.type != pygame.MOUSEBUTTONDOWN:
-            return
-        if event.button != 1:
-            return
-        pos = event.pos
-
-        # Sound icon (top-right) toggle
-        if hasattr(self, 'sound_icon_rect') and self.sound_icon_rect.collidepoint(pos):
-            # Only toggle when on the start menu (but allow if visible)
-            if self.game_state == STATE_START:
-                self.toggle_music()
                 return
 
-        # Start menu clickable items
-        if self.game_state == STATE_START:
-            menu_start_y = HEIGHT//3
-            for i, opt in enumerate(self.menu_options):
-                text = self.font.render(opt, True, (255,255,255))
-                x = WIDTH//2 - text.get_width()//2
-                y = menu_start_y + i*48
-                rect = pygame.Rect(x-12, y-6, text.get_width()+24, text.get_height()+8)
-                if rect.collidepoint(pos):
-                    if getattr(self, 'confirm_sound', None):
+            if self.game_state == STATE_START:
+                if k in (pygame.K_UP, pygame.K_w):
+                    self.selected_menu = (self.selected_menu - 1) % len(self.menu_options)
+                elif k in (pygame.K_DOWN, pygame.K_s):
+                    self.selected_menu = (self.selected_menu + 1) % len(self.menu_options)
+                elif k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    idx = self.selected_menu
+                    opt = self.menu_options[idx]
+                    if opt.lower().startswith('start'):
                         try:
-                            self.confirm_sound.play()
+                            self.reset()
+                            self.game_state = STATE_PLAYING
+                            self.start_ticks = pygame.time.get_ticks()
                         except Exception:
                             pass
-                    if opt == "Start Game":
-                        self.game_state = STATE_PLAYING
-                        self.reset()
-                    elif opt == "Settings":
-                        self.show_settings = True
-                        self.overlay_target_alpha = 220
-                        self.settings_selected = 0
-                    elif opt == "Quit":
+                    elif opt.lower().startswith('settings'):
+                        self.show_overlay = not getattr(self, 'show_overlay', False)
+                    elif opt.lower().startswith('quit'):
                         self.request_quit = True
-                    return
-
-        # Game over menu clickable items
-        if self.game_state == STATE_GAMEOVER:
-            menu_start_y = HEIGHT//2
-            for i, opt in enumerate(self.gameover_options):
-                text = self.font.render(opt, True, (255,255,255))
-                x = WIDTH//2 - text.get_width()//2
-                y = menu_start_y + i*48
-                rect = pygame.Rect(x-12, y-6, text.get_width()+24, text.get_height()+8)
-                if rect.collidepoint(pos):
-                    if getattr(self, 'confirm_sound', None):
+            elif self.game_state == STATE_GAMEOVER:
+                if k in (pygame.K_UP, pygame.K_w):
+                    self.selected_menu_gameover = (self.selected_menu_gameover - 1) % len(self.gameover_options)
+                elif k in (pygame.K_DOWN, pygame.K_s):
+                    self.selected_menu_gameover = (self.selected_menu_gameover + 1) % len(self.gameover_options)
+                elif k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    idx = self.selected_menu_gameover
+                    opt = self.gameover_options[idx]
+                    if opt.lower().startswith('restart'):
                         try:
-                            self.confirm_sound.play()
+                            self.reset()
+                            self.game_state = STATE_PLAYING
+                            self.start_ticks = pygame.time.get_ticks()
                         except Exception:
                             pass
-                    if opt == "Restart":
-                        self.game_state = STATE_PLAYING
-                        self.reset()
-                    elif opt == "Main Menu":
+                    elif opt.lower().startswith('main'):
                         self.game_state = STATE_START
-                        self.selected_menu = 0
-                    elif opt == "Quit":
+                    elif opt.lower().startswith('quit'):
                         self.request_quit = True
-                    return
-
-        # Settings overlay clicks (left/right half = decrement/increment, click back to close)
-        if self.show_settings:
-            panel_w, panel_h = WIDTH - 240, HEIGHT - 240
-            panel_x, panel_y = 120, 120
-            for idx, opt in enumerate(self.settings_options):
-                txt = self.font.render(opt, True, (255,255,255))
-                rect = pygame.Rect(panel_x + 40 - 6, panel_y + 90 + idx*48 - 6, txt.get_width()+12, txt.get_height()+8)
-                if rect.collidepoint(pos):
-                    # determine left/right half click
-                    mid_x = rect.left + rect.width // 2
-                    left_click = pos[0] < mid_x
-                    # play confirm
-                    if getattr(self, 'confirm_sound', None):
-                        try:
-                            self.confirm_sound.play()
-                        except Exception:
-                            pass
-                    if opt == "Music Volume":
-                        # left = decrease, right = increase
-                        if left_click:
-                            self.music_volume = max(0.0, round((self.music_volume - 0.1), 2))
-                        else:
-                            self.music_volume = min(1.0, round((self.music_volume + 0.1), 2))
-                        try:
-                            pygame.mixer.music.set_volume(self.music_volume)
-                        except Exception:
-                            pass
-                    elif opt == "Difficulty":
-                        if left_click:
-                            self.difficulty_index = (self.difficulty_index - 1) % len(self.difficulty_levels)
-                        else:
-                            self.difficulty_index = (self.difficulty_index + 1) % len(self.difficulty_levels)
-                        self.apply_difficulty_settings()
-                    elif opt == "Player Color":
-                        if left_click:
-                            self.player_color_index = (self.player_color_index - 1) % len(self.player_colors)
-                        else:
-                            self.player_color_index = (self.player_color_index + 1) % len(self.player_colors)
-                        try:
-                            self.player.color = self.player_colors[self.player_color_index]
-                        except Exception:
-                            pass
-                    elif opt == "Back":
-                        self.show_settings = False
-                        self.overlay_target_alpha = 0
-                    return
-
-    def handle_mouse_motion(self, event):
-        """Handle mouse motion for hover effects and cursor changes."""
-        pos = event.pos if hasattr(event, 'pos') else pygame.mouse.get_pos()
-        cursor_should_be_hand = False
-
-        # Start/menu hover
-        if self.game_state == STATE_START:
-            menu_start_y = HEIGHT//3
-            found = False
-            for i, opt in enumerate(self.menu_options):
-                text = self.font.render(opt, True, (255,255,255))
-                x = WIDTH//2 - text.get_width()//2
-                y = menu_start_y + i*48
-                rect = pygame.Rect(x-12, y-6, text.get_width()+24, text.get_height()+8)
-                if rect.collidepoint(pos):
-                    self.hovered_menu = i
-                    cursor_should_be_hand = True
-                    found = True
-                    break
-            if not found:
-                self.hovered_menu = None
-        else:
-            self.hovered_menu = None
-
-        # Game over menu hover
-        if self.game_state == STATE_GAMEOVER:
-            menu_start_y = HEIGHT//2
-            found = False
-            for i, opt in enumerate(self.gameover_options):
-                text = self.font.render(opt, True, (255,255,255))
-                x = WIDTH//2 - text.get_width()//2
-                y = menu_start_y + i*48
-                rect = pygame.Rect(x-12, y-6, text.get_width()+24, text.get_height()+8)
-                if rect.collidepoint(pos):
-                    self.hovered_gameover = i
-                    cursor_should_be_hand = True
-                    found = True
-                    break
-            if not found:
-                self.hovered_gameover = None
-        else:
-            self.hovered_gameover = None
-
-        # Settings overlay hover
-        if self.show_settings:
-            panel_w, panel_h = WIDTH - 240, HEIGHT - 240
-            panel_x, panel_y = 120, 120
-            found = False
-            for idx, opt in enumerate(self.settings_options):
-                txt = self.font.render(opt, True, (255,255,255))
-                rect = pygame.Rect(panel_x + 40 - 6, panel_y + 90 + idx*48 - 6, txt.get_width()+12, txt.get_height()+8)
-                if rect.collidepoint(pos):
-                    self.hovered_settings = idx
-                    cursor_should_be_hand = True
-                    found = True
-                    break
-            if not found:
-                self.hovered_settings = None
-        else:
-            self.hovered_settings = None
-
-        # Sound icon hover
-        if hasattr(self, 'sound_icon_rect') and self.sound_icon_rect.collidepoint(pos):
-            self.hovered_sound_icon = True
-            cursor_should_be_hand = True
-        else:
-            self.hovered_sound_icon = False
-
-        # Apply system cursor change if available
-        try:
-            if cursor_should_be_hand and getattr(self, 'cursor_hand', None):
-                pygame.mouse.set_cursor(self.cursor_hand)
-            elif getattr(self, 'cursor_arrow', None):
-                pygame.mouse.set_cursor(self.cursor_arrow)
+            else:
+                # In-game keys: allow quick toggle of music with M
+                if k == pygame.K_m:
+                    try:
+                        if hasattr(self, 'toggle_music'):
+                            self.toggle_music()
+                    except Exception:
+                        pass
         except Exception:
             pass
 
-    def toggle_music(self):
-        """Toggle background music on/off safely."""
-        self.music_enabled = not getattr(self, 'music_enabled', True)
+    def handle_mouse(self, event):
+        """Handle mouse button presses for clickable UI (sound icon, menu selection).
+        """
         try:
-            if self.music_enabled:
-                # try to (re)start music if available
-                music_path = os.path.join(ASSETS_PATH, "music.mp3")
-                if os.path.exists(music_path):
-                    if not pygame.mixer.music.get_busy():
-                        pygame.mixer.music.play(-1)
-                    pygame.mixer.music.set_volume(getattr(self, 'music_volume', 0.3))
-            else:
-                pygame.mixer.music.stop()
-        except Exception:
-            pass
+            if event.type != pygame.MOUSEBUTTONDOWN:
+                return
+            if event.button != 1:
+                return
+            mx, my = event.pos
+            # sound icon click
+            try:
+                if getattr(self, 'sound_icon_rect', None) and self.sound_icon_rect.collidepoint((mx, my)):
+                    try:
+                        if hasattr(self, 'toggle_music'):
+                            self.toggle_music()
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                pass
 
-    def draw(self):
-        # Clear
-        self.screen.fill((10,10,30))
-
-        if self.game_state == STATE_START:
-            # Animated title
-            t = pygame.time.get_ticks() / 600.0
-            pulse = 1.0 + 0.06 * math.sin(t)
-            title_surf = self.large_font.render("LightRunner", True, (255,255,0))
-            title_rect = title_surf.get_rect()
-            title_pos = (WIDTH//2 - int(title_rect.width * pulse)//2, HEIGHT//6)
-            # draw subtle glow behind title
-            glow = pygame.Surface((int(title_rect.width*pulse)+40, int(title_rect.height*pulse)+40), pygame.SRCALPHA)
-            glow.fill((0,0,0,0))
-            gcol = (255, 200, 50, 30)
-            pygame.draw.ellipse(glow, gcol, glow.get_rect())
-            self.screen.blit(glow, (title_pos[0]-20, title_pos[1]-20))
-            # draw title scaled
-            scaled = pygame.transform.smoothscale(title_surf, (int(title_rect.width*pulse), int(title_rect.height*pulse)))
-            self.screen.blit(scaled, title_pos)
-
-            # show high score under title
-            hs = self.font.render(f"High Score: {self.high_score}", True, (220,220,180))
-            self.screen.blit(hs, (WIDTH//2 - hs.get_width()//2, HEIGHT//3 - 40))
-
-            # Menu options
-            menu_start_y = HEIGHT//3
-            for i, opt in enumerate(self.menu_options):
-                is_selected = (i == self.selected_menu)
-                is_hover = (i == getattr(self, 'hovered_menu', None))
-                if is_selected:
-                    color = (255,255,255)
-                elif is_hover:
-                    color = (235,235,235)
-                else:
-                    color = (200,200,200)
-                text = self.font.render(opt, True, color)
-                x = WIDTH//2 - text.get_width()//2
-                y = menu_start_y + i*48
-                # Selected gets a stronger background, hovered gets a subtle background
-                if is_selected:
-                    pygame.draw.rect(self.screen, (40,40,60), (x-12, y-6, text.get_width()+24, text.get_height()+8), border_radius=8)
-                elif is_hover:
-                    pygame.draw.rect(self.screen, (30,30,50), (x-12, y-6, text.get_width()+24, text.get_height()+8), border_radius=8)
-                self.screen.blit(text, (x, y))
-                if i == self.selected_menu:
-                    # animated arrow
-                    pulse_a = 6 * math.sin(pygame.time.get_ticks() / self.cursor_pulse_speed)
-                    ax = x - 28 + int(pulse_a)
-                    ay = y + text.get_height()//2
-                    pygame.draw.polygon(self.screen, (255,255,255), [(ax, ay), (ax+10, ay-8), (ax+10, ay+8)])
-
-                hint = self.font.render("Use Up/Down to navigate — Enter to select", True, (180,180,180))
-                self.screen.blit(hint, (WIDTH//2 - hint.get_width()//2, HEIGHT - 70))
-
-            # draw sound icon in top-right of the menu (clickable)
-            # simple speaker glyph + waves; draw an X overlay when muted
-            icon_x = WIDTH - self.sound_icon_padding - self.sound_icon_size
-            icon_y = self.sound_icon_padding
-            rect = pygame.Rect(icon_x, icon_y, self.sound_icon_size, self.sound_icon_size)
-            # background circle
-            pygame.draw.rect(self.screen, (18,18,22), rect, border_radius=8)
-            pygame.draw.rect(self.screen, (90,90,100), rect, width=2, border_radius=8)
-            # speaker triangle
-            cx = icon_x + 8
-            cy = icon_y + self.sound_icon_size//2
-            pygame.draw.polygon(self.screen, (230,230,230), [(cx, cy-8), (cx+6, cy-8), (cx+12, cy-14), (cx+12, cy+14), (cx+6, cy+8), (cx, cy+8)])
-            # waves when enabled
-            if self.music_enabled:
-                pygame.draw.arc(self.screen, (200,200,200), (icon_x+12, icon_y+6, 18, 24), math.radians(300), math.radians(60), 2)
-                pygame.draw.arc(self.screen, (200,200,200), (icon_x+6, icon_y+4, 26, 28), math.radians(300), math.radians(60), 1)
-            else:
-                # draw small X to indicate muted
-                pygame.draw.line(self.screen, (220,80,80), (icon_x+8, icon_y+8), (icon_x+28, icon_y+28), 3)
-                pygame.draw.line(self.screen, (220,80,80), (icon_x+28, icon_y+8), (icon_x+8, icon_y+28), 3)
-            # store rect for click checks
-            self.sound_icon_rect = rect
-
-        elif self.game_state == STATE_GAMEOVER:
-            # Game over screen
-            gameover_text = self.large_font.render("Game Over!", True, (255,50,50))
-            score_text = self.font.render(f"Score: {self.score}", True, (255,255,255))
-            self.screen.blit(gameover_text, (WIDTH//2 - gameover_text.get_width()//2, HEIGHT//4))
-            self.screen.blit(score_text, (WIDTH//2 - score_text.get_width()//2, HEIGHT//4 + 80))
-
-            # New high flash
-            if self.new_high:
-                ratio = self.new_high_timer / 120.0
-                pulse = 1.0 + 0.18 * math.sin(pygame.time.get_ticks() / 120.0)
-                nh_text = self.large_font.render("NEW HIGH SCORE!", True, (255,215,0))
-                nh_w = int(nh_text.get_width() * pulse)
-                nh_h = int(nh_text.get_height() * pulse)
-                nh_surf = pygame.transform.smoothscale(nh_text, (nh_w, nh_h))
-                nh_x = WIDTH//2 - nh_w//2
-                nh_y = HEIGHT//4 - nh_h - 10
-                glow = pygame.Surface((nh_w+40, nh_h+20), pygame.SRCALPHA)
-                glow.fill((0,0,0,0))
-                gcol = (255, 220, 80, int(160 * ratio))
-                pygame.draw.ellipse(glow, gcol, glow.get_rect())
-                self.screen.blit(glow, (nh_x-20, nh_y-10))
-                self.screen.blit(nh_surf, (nh_x, nh_y))
-
-            # game over menu options
-            menu_start_y = HEIGHT//2
-            for i, opt in enumerate(self.gameover_options):
-                is_selected = (i == self.selected_menu_gameover)
-                is_hover = (i == getattr(self, 'hovered_gameover', None))
-                if is_selected:
-                    color = (255,255,255)
-                elif is_hover:
-                    color = (235,235,235)
-                else:
-                    color = (200,200,200)
-                text = self.font.render(opt, True, color)
-                x = WIDTH//2 - text.get_width()//2
-                y = menu_start_y + i*48
-                if is_selected:
-                    pygame.draw.rect(self.screen, (40,40,60), (x-12, y-6, text.get_width()+24, text.get_height()+8), border_radius=8)
-                elif is_hover:
-                    pygame.draw.rect(self.screen, (30,30,50), (x-12, y-6, text.get_width()+24, text.get_height()+8), border_radius=8)
-                self.screen.blit(text, (x, y))
-                if i == self.selected_menu_gameover:
-                    pulse_a = 6 * math.sin(pygame.time.get_ticks() / self.cursor_pulse_speed)
-                    ax = x - 28 + int(pulse_a)
-                    ay = y + text.get_height()//2
-                    pygame.draw.polygon(self.screen, (255,255,255), [(ax, ay), (ax+10, ay-8), (ax+10, ay+8)])
-
-            hint = self.font.render("Use Up/Down to choose — Enter to confirm", True, (180,180,180))
-            self.screen.blit(hint, (WIDTH//2 - hint.get_width()//2, HEIGHT - 70))
-
-        elif self.game_state == STATE_PLAYING:
-            # Draw game content to an offscreen surface so we can apply screen shake
-            play_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-            play_surf.fill((10,10,30))
-
-            # draw game objects onto play_surf
-            self.player.draw(play_surf)
-            self.orb.draw(play_surf)
-            for pu in self.powerups:
+            # click menu items on Start screen
+            if self.game_state == STATE_START:
                 try:
-                    pu.draw(play_surf)
+                    start_y = HEIGHT//3
+                    for i, opt in enumerate(getattr(self, 'menu_options', [])):
+                        txt = self.font.render(opt, True, (255,255,255))
+                        x = WIDTH//2 - txt.get_width()//2
+                        y = start_y + i*48
+                        rect = pygame.Rect(x-12, y-6, txt.get_width()+24, txt.get_height()+12)
+                        if rect.collidepoint((mx, my)):
+                            self.selected_menu = i
+                            # perform selection
+                            if opt.lower().startswith('start'):
+                                try:
+                                    self.reset()
+                                    self.game_state = STATE_PLAYING
+                                    self.start_ticks = pygame.time.get_ticks()
+                                except Exception:
+                                    pass
+                            elif opt.lower().startswith('settings'):
+                                self.show_overlay = not getattr(self, 'show_overlay', False)
+                            elif opt.lower().startswith('quit'):
+                                self.request_quit = True
+                            return
                 except Exception:
                     pass
-            for ob in self.obstacles:
-                ob.draw(play_surf)
 
-            for proj in self.projectiles:
-                proj.draw(play_surf)
+            # click gameover menu
+            if self.game_state == STATE_GAMEOVER:
+                try:
+                    start_y = HEIGHT//2
+                    for i, opt in enumerate(getattr(self, 'gameover_options', [])):
+                        txt = self.font.render(opt, True, (255,255,255))
+                        x = WIDTH//2 - txt.get_width()//2
+                        y = start_y + i*48
+                        rect = pygame.Rect(x-12, y-6, txt.get_width()+24, txt.get_height()+12)
+                        if rect.collidepoint((mx, my)):
+                            self.selected_menu_gameover = i
+                            if opt.lower().startswith('restart'):
+                                try:
+                                    self.reset()
+                                    self.game_state = STATE_PLAYING
+                                    self.start_ticks = pygame.time.get_ticks()
+                                except Exception:
+                                    pass
+                            elif opt.lower().startswith('main'):
+                                self.game_state = STATE_START
+                            elif opt.lower().startswith('quit'):
+                                self.request_quit = True
+                            return
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-            # HUD
-            self.draw_hud(play_surf)
-
-            # compute shake offset
-            offset_x = 0
-            offset_y = 0
-            if self.shake_timer > 0:
-                mag = self.shake_magnitude
-                offset_x = random.randint(-mag, mag)
-                offset_y = random.randint(-mag, mag)
-
-            # blit the play surface
-            self.screen.blit(play_surf, (offset_x, offset_y))
-
-        # Settings overlay drawing (distinct panel + full-screen dim when active)
-        if self.show_settings or self.overlay_alpha > 0:
-            # full-screen dim to separate background from settings
-            dim = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-            dim_alpha = int(min(200, max(0, self.overlay_alpha))) if self.overlay_alpha is not None else 180
-            dim.fill((0, 0, 0, dim_alpha))
-            self.screen.blit(dim, (0,0))
-
-            # panel
-            panel_w, panel_h = WIDTH - 240, HEIGHT - 240
-            panel_x, panel_y = 120, 120
-            panel = pygame.Surface((panel_w, panel_h))
-            panel.fill((18,18,22))
-            # border
-            pygame.draw.rect(panel, (80,80,90), panel.get_rect(), width=2, border_radius=8)
-            self.screen.blit(panel, (panel_x, panel_y))
-
-            # settings contents
-            title = self.large_font.render("Settings", True, (255,255,255))
-            self.screen.blit(title, (WIDTH//2 - title.get_width()//2, panel_y + 12))
-            for idx, opt in enumerate(self.settings_options):
-                color = (200,200,200) if idx != self.settings_selected else (255,255,255)
-                # hover highlight for settings list
-                if idx == getattr(self, 'hovered_settings', None) and idx != self.settings_selected:
-                    pygame.draw.rect(self.screen, (36,36,48), (panel_x + 34, panel_y + 90 + idx*48 - 6,  self.font.size(opt)[0] + 12, self.font.get_height() + 8), border_radius=6)
-                if opt == "Music Volume":
-                    txt = self.font.render(f"{opt}: {int(self.music_volume*100)}%", True, color)
-                    self.screen.blit(txt, (panel_x + 40, panel_y + 90 + idx*48))
-                elif opt == "Difficulty":
-                    txt = self.font.render(f"{opt}: {self.difficulty_levels[self.difficulty_index]}", True, color)
-                    self.screen.blit(txt, (panel_x + 40, panel_y + 90 + idx*48))
-                elif opt == "Player Color":
-                    txt = self.font.render(f"{opt}", True, color)
-                    self.screen.blit(txt, (panel_x + 40, panel_y + 90 + idx*48))
-                    # draw swatch
-                    sw = 40
-                    sw_x = panel_x + panel_w - 40 - sw
-                    sw_y = panel_y + 90 + idx*48
-                    pygame.draw.rect(self.screen, self.player_colors[self.player_color_index], (sw_x, sw_y, sw, sw), border_radius=6)
-                    pygame.draw.rect(self.screen, (180,180,180), (sw_x, sw_y, sw, sw), width=2, border_radius=6)
-                else:
-                    txt = self.font.render(opt, True, color)
-                    self.screen.blit(txt, (panel_x + 40, panel_y + 90 + idx*48))
-
-        # Draw tooltip at bottom
-        if self.tooltip_text:
-            tip = self.font.render(self.tooltip_text, True, (180,180,180))
-            self.screen.blit(tip, (WIDTH//2 - tip.get_width()//2, HEIGHT - 40))
-
-        # Credits scrolling advance handled in update() or when opening credits
-        # ensure display updated by caller
+    def handle_mouse_motion(self, event):
+        """Track hovered menu item and sound icon for UI hover effects.
+        """
+        try:
+            mx, my = event.pos
+            self.hovered_menu = None
+            self.hovered_gameover = None
+            self.hovered_sound_icon = False
+            # sound icon
+            try:
+                if getattr(self, 'sound_icon_rect', None) and self.sound_icon_rect.collidepoint((mx, my)):
+                    self.hovered_sound_icon = True
+            except Exception:
+                pass
+            # start menu hover
+            if self.game_state == STATE_START:
+                try:
+                    start_y = HEIGHT//3
+                    for i, opt in enumerate(getattr(self, 'menu_options', [])):
+                        txt = self.font.render(opt, True, (255,255,255))
+                        x = WIDTH//2 - txt.get_width()//2
+                        y = start_y + i*48
+                        rect = pygame.Rect(x-12, y-6, txt.get_width()+24, txt.get_height()+12)
+                        if rect.collidepoint((mx, my)):
+                            self.hovered_menu = i
+                            break
+                except Exception:
+                    pass
+            # gameover hover
+            if self.game_state == STATE_GAMEOVER:
+                try:
+                    start_y = HEIGHT//2
+                    for i, opt in enumerate(getattr(self, 'gameover_options', [])):
+                        txt = self.font.render(opt, True, (255,255,255))
+                        x = WIDTH//2 - txt.get_width()//2
+                        y = start_y + i*48
+                        rect = pygame.Rect(x-12, y-6, txt.get_width()+24, txt.get_height()+12)
+                        if rect.collidepoint((mx, my)):
+                            self.hovered_gameover = i
+                            break
+                except Exception:
+                    pass
+        except Exception:
+            pass

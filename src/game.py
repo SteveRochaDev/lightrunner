@@ -443,6 +443,59 @@ class Game:
                         self.screen.blit(h2, (WIDTH//2 - h2.get_width()//2, HEIGHT - 44))
                     except Exception:
                         pass
+
+                    # draw settings overlay/panel if requested
+                    try:
+                        if getattr(self, 'show_overlay', False) or getattr(self, 'show_settings', False):
+                            panel_w, panel_h = 480, 320
+                            panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+                            panel.fill((16,16,20,220))
+                            # title
+                            title = self.font.render("Settings", True, (240,240,240))
+                            panel.blit(title, (20, 18))
+                            # options
+                            opt_font = pygame.font.Font(None, 28)
+                            opt_y = 64
+                            # draw each option with its current value to the right
+                            for i, sopt in enumerate(getattr(self, 'settings_options', [])):
+                                col = (255,255,255) if i == getattr(self, 'settings_selected', 0) else (180,180,180)
+                                txt = opt_font.render(sopt, True, col)
+                                panel.blit(txt, (36, opt_y + i * 38))
+                                # value text
+                                try:
+                                    if sopt.lower().startswith('music'):
+                                        val = f"{getattr(self, 'music_volume', 0.3):.1f}"
+                                    elif sopt.lower().startswith('difficulty'):
+                                        val = getattr(self, 'difficulty_levels', [])[getattr(self, 'difficulty_index', 0)]
+                                    elif sopt.lower().startswith('player color'):
+                                        # draw a small swatch instead of text
+                                        col_idx = getattr(self, 'player_color_index', 0)
+                                        cols = getattr(self, 'player_colors', [])
+                                        if 0 <= col_idx < len(cols):
+                                            sw = pygame.Surface((24,18))
+                                            sw.fill(cols[col_idx])
+                                            panel.blit(sw, (panel_w - 84, opt_y + i * 38))
+                                            # no textual label, swatch is sufficient
+                                            val = ""
+                                        else:
+                                            val = ""
+                                    else:
+                                        val = ""
+                                    val_txt = pygame.font.Font(None, 22).render(str(val), True, (200,200,200))
+                                    panel.blit(val_txt, (panel_w - 60 - val_txt.get_width(), opt_y + i * 38))
+                                except Exception:
+                                    pass
+                            # small explanatory text
+                            try:
+                                sub = pygame.font.Font(None, 20).render("Click an option to cycle it, or Back to return", True, (200,200,200))
+                                panel.blit(sub, (36, panel_h - 40))
+                            except Exception:
+                                pass
+                            sx = WIDTH//2 - panel_w//2
+                            sy = HEIGHT//2 - panel_h//2
+                            self.screen.blit(panel, (sx, sy))
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -800,22 +853,137 @@ class Game:
             if event.type != pygame.KEYDOWN:
                 return
             k = event.key
+            uni = getattr(event, 'unicode', '')
             # Global back/escape handling
             if k == pygame.K_ESCAPE:
                 # if in settings overlay, close it; otherwise go to main menu
-                if getattr(self, 'show_overlay', False):
+                if getattr(self, 'show_overlay', False) or getattr(self, 'show_settings', False):
                     self.show_overlay = False
+                    self.show_settings = False
                     return
                 self.game_state = STATE_START
                 return
 
+            # If Settings overlay is visible, let it take keyboard input first
+            if getattr(self, 'show_overlay', False) or getattr(self, 'show_settings', False):
+                if k in (pygame.K_UP, pygame.K_w):
+                    self.settings_selected = (self.settings_selected - 1) % len(self.settings_options)
+                    try:
+                        if getattr(self, 'navigate_sound', None):
+                            self.navigate_sound.play()
+                    except Exception:
+                        pass
+                    return
+                elif k in (pygame.K_DOWN, pygame.K_s):
+                    self.settings_selected = (self.settings_selected + 1) % len(self.settings_options)
+                    try:
+                        if getattr(self, 'navigate_sound', None):
+                            self.navigate_sound.play()
+                    except Exception:
+                        pass
+                    return
+                # accept literal '<' and '>' from shifted comma/period as quick controls
+                if uni == '<' or k in (pygame.K_LEFT, pygame.K_COMMA):
+                    idx = getattr(self, 'settings_selected', 0)
+                    opt = self.settings_options[idx]
+                    if opt.lower().startswith('music'):
+                        self.music_volume = round(max(0.0, (getattr(self, 'music_volume', 0.3) - 0.1)), 1)
+                        try:
+                            pygame.mixer.music.set_volume(self.music_volume)
+                        except Exception:
+                            pass
+                    elif opt.lower().startswith('difficulty'):
+                        self.difficulty_index = (self.difficulty_index - 1) % len(self.difficulty_levels)
+                        try:
+                            self.apply_difficulty_settings()
+                        except Exception:
+                            pass
+                    elif opt.lower().startswith('player color'):
+                        self.player_color_index = (self.player_color_index - 1) % len(self.player_colors)
+                        try:
+                            self.player.color = self.player_colors[self.player_color_index]
+                        except Exception:
+                            pass
+                    try:
+                        if getattr(self, 'navigate_sound', None):
+                            self.navigate_sound.play()
+                    except Exception:
+                        pass
+                    return
+                if uni == '>' or k in (pygame.K_RIGHT, pygame.K_PERIOD):
+                    idx = getattr(self, 'settings_selected', 0)
+                    opt = self.settings_options[idx]
+                    if opt.lower().startswith('music'):
+                        self.music_volume = round(min(1.0, (getattr(self, 'music_volume', 0.3) + 0.1)), 1)
+                        try:
+                            pygame.mixer.music.set_volume(self.music_volume)
+                        except Exception:
+                            pass
+                    elif opt.lower().startswith('difficulty'):
+                        self.difficulty_index = (self.difficulty_index + 1) % len(self.difficulty_levels)
+                        try:
+                            self.apply_difficulty_settings()
+                        except Exception:
+                            pass
+                    elif opt.lower().startswith('player color'):
+                        self.player_color_index = (self.player_color_index + 1) % len(self.player_colors)
+                        try:
+                            self.player.color = self.player_colors[self.player_color_index]
+                        except Exception:
+                            pass
+                    elif opt.lower().startswith('back'):
+                        self.show_overlay = False
+                        self.show_settings = False
+                    try:
+                        if getattr(self, 'confirm_sound', None):
+                            self.confirm_sound.play()
+                    except Exception:
+                        pass
+                    return
+                elif k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    idx = getattr(self, 'settings_selected', 0)
+                    opt = self.settings_options[idx]
+                    # cycle or activate the selected setting
+                    if opt.lower().startswith('music'):
+                        # step volume by 0.1
+                        self.music_volume = round(min(1.0, (getattr(self, 'music_volume', 0.3) + 0.1)), 1)
+                        try:
+                            pygame.mixer.music.set_volume(self.music_volume)
+                        except Exception:
+                            pass
+                    elif opt.lower().startswith('difficulty'):
+                        self.difficulty_index = (self.difficulty_index + 1) % len(self.difficulty_levels)
+                        try:
+                            self.apply_difficulty_settings()
+                        except Exception:
+                            pass
+                    elif opt.lower().startswith('player color'):
+                        self.player_color_index = (self.player_color_index + 1) % len(self.player_colors)
+                        try:
+                            self.player.color = self.player_colors[self.player_color_index]
+                        except Exception:
+                            pass
+                    elif opt.lower().startswith('back'):
+                        self.show_overlay = False
+                        self.show_settings = False
+                    try:
+                        if getattr(self, 'confirm_sound', None):
+                            self.confirm_sound.play()
+                    except Exception:
+                        pass
+                    return
+
+            # fallthrough to other states
             if self.game_state == STATE_START:
                 if k in (pygame.K_UP, pygame.K_w):
                     self.selected_menu = (self.selected_menu - 1) % len(self.menu_options)
                 elif k in (pygame.K_DOWN, pygame.K_s):
                     self.selected_menu = (self.selected_menu + 1) % len(self.menu_options)
                 elif k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-                    idx = self.selected_menu
+                    # prefer the hovered menu (mouse) if present, otherwise use keyboard selected_menu
+                    idx = getattr(self, 'hovered_menu', None)
+                    if idx is None:
+                        idx = self.selected_menu
                     opt = self.menu_options[idx]
                     if opt.lower().startswith('start'):
                         try:
@@ -825,7 +993,9 @@ class Game:
                         except Exception:
                             pass
                     elif opt.lower().startswith('settings'):
+                        # keep both flags in sync
                         self.show_overlay = not getattr(self, 'show_overlay', False)
+                        self.show_settings = self.show_overlay
                     elif opt.lower().startswith('quit'):
                         self.request_quit = True
             elif self.game_state == STATE_GAMEOVER:
@@ -859,14 +1029,14 @@ class Game:
             pass
 
     def handle_mouse(self, event):
-        """Handle mouse button presses for clickable UI (sound icon, menu selection).
-        """
+        """Handle mouse button presses for clickable UI (sound icon, menu selection, settings)."""
         try:
             if event.type != pygame.MOUSEBUTTONDOWN:
                 return
             if event.button != 1:
                 return
             mx, my = event.pos
+
             # sound icon click
             try:
                 if getattr(self, 'sound_icon_rect', None) and self.sound_icon_rect.collidepoint((mx, my)):
@@ -879,18 +1049,60 @@ class Game:
             except Exception:
                 pass
 
-            # click menu items on Start screen
+            # If Settings overlay is visible, handle clicks inside the panel first
+            if getattr(self, 'show_overlay', False) or getattr(self, 'show_settings', False):
+                try:
+                    panel_w, panel_h = 480, 320
+                    sx = WIDTH // 2 - panel_w // 2
+                    sy = HEIGHT // 2 - panel_h // 2
+                    if sx <= mx <= sx + panel_w and sy <= my <= sy + panel_h:
+                        rel_y = my - (sy + 64)
+                        opt_h = 38
+                        idx = int(rel_y // opt_h)
+                        if 0 <= idx < len(getattr(self, 'settings_options', [])):
+                            self.settings_selected = idx
+                            opt = self.settings_options[idx]
+                            if opt.lower().startswith('music'):
+                                self.music_volume = round(min(1.0, (getattr(self, 'music_volume', 0.3) + 0.1)), 1)
+                                try:
+                                    pygame.mixer.music.set_volume(self.music_volume)
+                                except Exception:
+                                    pass
+                            elif opt.lower().startswith('difficulty'):
+                                self.difficulty_index = (self.difficulty_index + 1) % len(self.difficulty_levels)
+                                try:
+                                    self.apply_difficulty_settings()
+                                except Exception:
+                                    pass
+                            elif opt.lower().startswith('player color'):
+                                self.player_color_index = (self.player_color_index + 1) % len(self.player_colors)
+                                try:
+                                    self.player.color = self.player_colors[self.player_color_index]
+                                except Exception:
+                                    pass
+                            elif opt.lower().startswith('back'):
+                                self.show_overlay = False
+                                self.show_settings = False
+                            try:
+                                if getattr(self, 'confirm_sound', None):
+                                    self.confirm_sound.play()
+                            except Exception:
+                                pass
+                            return
+                except Exception:
+                    pass
+
+            # Click menu items on Start screen
             if self.game_state == STATE_START:
                 try:
-                    start_y = HEIGHT//3
+                    start_y = HEIGHT // 3
                     for i, opt in enumerate(getattr(self, 'menu_options', [])):
-                        txt = self.font.render(opt, True, (255,255,255))
-                        x = WIDTH//2 - txt.get_width()//2
-                        y = start_y + i*48
-                        rect = pygame.Rect(x-12, y-6, txt.get_width()+24, txt.get_height()+12)
+                        txt = self.font.render(opt, True, (255, 255, 255))
+                        x = WIDTH // 2 - txt.get_width() // 2
+                        y = start_y + i * 48
+                        rect = pygame.Rect(x - 12, y - 6, txt.get_width() + 24, txt.get_height() + 12)
                         if rect.collidepoint((mx, my)):
                             self.selected_menu = i
-                            # perform selection
                             if opt.lower().startswith('start'):
                                 try:
                                     self.reset()
@@ -900,21 +1112,22 @@ class Game:
                                     pass
                             elif opt.lower().startswith('settings'):
                                 self.show_overlay = not getattr(self, 'show_overlay', False)
+                                self.show_settings = self.show_overlay
                             elif opt.lower().startswith('quit'):
                                 self.request_quit = True
                             return
                 except Exception:
                     pass
 
-            # click gameover menu
+            # Click gameover menu
             if self.game_state == STATE_GAMEOVER:
                 try:
-                    start_y = HEIGHT//2
+                    start_y = HEIGHT // 2
                     for i, opt in enumerate(getattr(self, 'gameover_options', [])):
-                        txt = self.font.render(opt, True, (255,255,255))
-                        x = WIDTH//2 - txt.get_width()//2
-                        y = start_y + i*48
-                        rect = pygame.Rect(x-12, y-6, txt.get_width()+24, txt.get_height()+12)
+                        txt = self.font.render(opt, True, (255, 255, 255))
+                        x = WIDTH // 2 - txt.get_width() // 2
+                        y = start_y + i * 48
+                        rect = pygame.Rect(x - 12, y - 6, txt.get_width() + 24, txt.get_height() + 12)
                         if rect.collidepoint((mx, my)):
                             self.selected_menu_gameover = i
                             if opt.lower().startswith('restart'):
@@ -929,51 +1142,6 @@ class Game:
                             elif opt.lower().startswith('quit'):
                                 self.request_quit = True
                             return
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    def handle_mouse_motion(self, event):
-        """Track hovered menu item and sound icon for UI hover effects.
-        """
-        try:
-            mx, my = event.pos
-            self.hovered_menu = None
-            self.hovered_gameover = None
-            self.hovered_sound_icon = False
-            # sound icon
-            try:
-                if getattr(self, 'sound_icon_rect', None) and self.sound_icon_rect.collidepoint((mx, my)):
-                    self.hovered_sound_icon = True
-            except Exception:
-                pass
-            # start menu hover
-            if self.game_state == STATE_START:
-                try:
-                    start_y = HEIGHT//3
-                    for i, opt in enumerate(getattr(self, 'menu_options', [])):
-                        txt = self.font.render(opt, True, (255,255,255))
-                        x = WIDTH//2 - txt.get_width()//2
-                        y = start_y + i*48
-                        rect = pygame.Rect(x-12, y-6, txt.get_width()+24, txt.get_height()+12)
-                        if rect.collidepoint((mx, my)):
-                            self.hovered_menu = i
-                            break
-                except Exception:
-                    pass
-            # gameover hover
-            if self.game_state == STATE_GAMEOVER:
-                try:
-                    start_y = HEIGHT//2
-                    for i, opt in enumerate(getattr(self, 'gameover_options', [])):
-                        txt = self.font.render(opt, True, (255,255,255))
-                        x = WIDTH//2 - txt.get_width()//2
-                        y = start_y + i*48
-                        rect = pygame.Rect(x-12, y-6, txt.get_width()+24, txt.get_height()+12)
-                        if rect.collidepoint((mx, my)):
-                            self.hovered_gameover = i
-                            break
                 except Exception:
                     pass
         except Exception:

@@ -77,8 +77,9 @@ class Game:
         self.menu_options = ["Start Game", "Settings", "Quit"]
         self.selected_menu = 0
         # Sound icon for main menu (drawn top-right)
-        self.sound_icon_size = 36
-        self.sound_icon_padding = 18
+        # make icon bigger so it's clearly visible
+        self.sound_icon_size = 56
+        self.sound_icon_padding = 14
         self.sound_icon_rect = pygame.Rect(WIDTH - self.sound_icon_padding - self.sound_icon_size,
                                            self.sound_icon_padding,
                                            self.sound_icon_size, self.sound_icon_size)
@@ -402,17 +403,106 @@ class Game:
         except Exception:
             pass
 
+    def draw_sound_icon(self):
+        """Draw a high-contrast sound icon in the top-right. Always blitted on the main screen.
+        Uses self.sound_icon_rect for position so clicks still work.
+        Updated to ensure waves are visible at different sizes and backgrounds.
+        """
+        try:
+            rect = getattr(self, 'sound_icon_rect', None)
+            if rect is None:
+                return
+            # surface for icon
+            try:
+                icon_s = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                # solid, high-contrast background
+                bg_col = (28, 32, 40, 240)
+                pygame.draw.rect(icon_s, bg_col, (0, 0, rect.width, rect.height), border_radius=12)
+                # subtle inner border
+                try:
+                    pygame.draw.rect(icon_s, (255,255,255,14), (2,2,rect.width-4,rect.height-4), border_radius=10)
+                except Exception:
+                    pass
+
+                # speaker glyph (white)
+                sx = int(rect.width * 0.14)
+                sy = rect.height // 2
+                speaker_pts = [
+                    (sx, sy - int(rect.height * 0.18)),
+                    (sx + int(rect.width * 0.22), sy - int(rect.height * 0.28)),
+                    (sx + int(rect.width * 0.22), sy + int(rect.height * 0.28)),
+                    (sx, sy + int(rect.height * 0.18))
+                ]
+                pygame.draw.polygon(icon_s, (245,245,245), speaker_pts)
+
+                # waves (bright cyan) - compute rects relative to icon size so they always fit
+                wave_col_outer = (100, 200, 255)
+                wave_col_inner = (160, 230, 255)
+                # outer wave
+                try:
+                    w1_x = int(rect.width * 0.48)
+                    w1_y = int(rect.height * 0.18)
+                    w1_w = max(10, int(rect.width * 0.40))
+                    w1_h = max(10, int(rect.height * 0.64))
+                    pygame.draw.arc(icon_s, wave_col_outer, (w1_x, w1_y, w1_w, w1_h), math.radians(-45), math.radians(45), max(2, int(rect.width * 0.06)))
+                    # inner wave
+                    w2_x = int(rect.width * 0.56)
+                    w2_y = int(rect.height * 0.24)
+                    w2_w = max(8, int(rect.width * 0.32))
+                    w2_h = max(8, int(rect.height * 0.56))
+                    pygame.draw.arc(icon_s, wave_col_inner, (w2_x, w2_y, w2_w, w2_h), math.radians(-45), math.radians(45), max(2, int(rect.width * 0.045)))
+                except Exception:
+                    pass
+
+                # muted state -> draw clear red X on top
+                if not getattr(self, 'music_enabled', True):
+                    try:
+                        lx = 8
+                        ly = 8
+                        rx = rect.width - 8
+                        ry = rect.height - 8
+                        pygame.draw.line(icon_s, (255, 90, 90), (lx, ly), (rx, ry), max(3, int(rect.width * 0.08)))
+                        pygame.draw.line(icon_s, (255, 90, 90), (rx, ly), (lx, ry), max(3, int(rect.width * 0.08)))
+                    except Exception:
+                        pass
+
+                # final small border to help contrast on light backgrounds
+                try:
+                    pygame.draw.rect(icon_s, (0,0,0,120), (0,0,rect.width,rect.height), width=1, border_radius=12)
+                except Exception:
+                    pass
+
+                # draw icon surface to main screen
+                try:
+                    self.screen.blit(icon_s, (rect.x, rect.y))
+                except Exception:
+                    pass
+            except Exception:
+                try:
+                    pygame.draw.rect(self.screen, (60,64,76), rect, border_radius=8)
+                except Exception:
+                    try:
+                        pygame.draw.rect(self.screen, (60,64,76), rect)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def draw(self):
         """Main render entry. Keeps drawing simple and defensive so the game
         always has a draw implementation even if other parts are incomplete.
+        This version renders the world to an offscreen surface when needed so
+        we can blit it with a small offset for a screen-shake effect while
+        keeping HUD and overlays stable on the screen.
         """
         try:
-            # clear background
+            # clear main screen
             self.screen.fill((10, 10, 30))
 
+            # --- START: handle non-shaken states (Start / GameOver) as before ---
             if self.game_state == STATE_START:
                 try:
-                    # title
+                    # title & menu draw onto main screen (no shake for menus)
                     title_surf = self.large_font.render("LightRunner", True, (255, 220, 40))
                     tr = title_surf.get_rect(center=(WIDTH//2, HEIGHT//6))
                     self.screen.blit(title_surf, tr)
@@ -427,7 +517,6 @@ class Game:
                         txt = self.font.render(opt, True, col)
                         tx = WIDTH//2 - txt.get_width()//2
                         ty = start_y + i * 48
-                        # background for selected
                         if is_sel:
                             try:
                                 pygame.draw.rect(self.screen, (22,22,26), (tx-12, ty-6, txt.get_width()+24, txt.get_height()+12), border_radius=8)
@@ -456,26 +545,22 @@ class Game:
                             # options
                             opt_font = pygame.font.Font(None, 28)
                             opt_y = 64
-                            # draw each option with its current value to the right
                             for i, sopt in enumerate(getattr(self, 'settings_options', [])):
                                 col = (255,255,255) if i == getattr(self, 'settings_selected', 0) else (180,180,180)
                                 txt = opt_font.render(sopt, True, col)
                                 panel.blit(txt, (36, opt_y + i * 38))
-                                # value text
                                 try:
                                     if sopt.lower().startswith('music'):
                                         val = f"{getattr(self, 'music_volume', 0.3):.1f}"
                                     elif sopt.lower().startswith('difficulty'):
                                         val = getattr(self, 'difficulty_levels', [])[getattr(self, 'difficulty_index', 0)]
                                     elif sopt.lower().startswith('player color'):
-                                        # draw a small swatch instead of text
                                         col_idx = getattr(self, 'player_color_index', 0)
                                         cols = getattr(self, 'player_colors', [])
                                         if 0 <= col_idx < len(cols):
                                             sw = pygame.Surface((24,18))
                                             sw.fill(cols[col_idx])
                                             panel.blit(sw, (panel_w - 84, opt_y + i * 38))
-                                            # no textual label, swatch is sufficient
                                             val = ""
                                         else:
                                             val = ""
@@ -485,7 +570,6 @@ class Game:
                                     panel.blit(val_txt, (panel_w - 60 - val_txt.get_width(), opt_y + i * 38))
                                 except Exception:
                                     pass
-                            # small explanatory text
                             try:
                                 sub = pygame.font.Font(None, 20).render("Click an option to cycle it, or Back to return", True, (200,200,200))
                                 panel.blit(sub, (36, panel_h - 40))
@@ -499,44 +583,95 @@ class Game:
                 except Exception:
                     pass
 
+            # --- PLAYING: draw the world; apply shake transform if active ---
             elif self.game_state == STATE_PLAYING:
                 try:
-                    # draw orb
-                    try:
-                        self.orb.draw(self.screen)
-                    except Exception:
-                        pass
-                    # draw obstacles
-                    for ob in list(getattr(self, 'obstacles', [])):
+                    # If shaking, render the world to an offscreen surface and blit with an offset
+                    if getattr(self, 'shake_timer', 0) > 0:
+                        world = pygame.Surface((WIDTH, HEIGHT))
+                        # use same background clear as main screen
+                        world.fill((10, 10, 30))
+                        # draw orb
                         try:
-                            ob.draw(self.screen)
+                            self.orb.draw(world)
                         except Exception:
                             pass
-                    # draw projectiles
-                    for p in list(getattr(self, 'projectiles', [])):
+                        # draw obstacles
+                        for ob in list(getattr(self, 'obstacles', [])):
+                            try:
+                                ob.draw(world)
+                            except Exception:
+                                pass
+                        # draw projectiles
+                        for p in list(getattr(self, 'projectiles', [])):
+                            try:
+                                p.draw(world)
+                            except Exception:
+                                pass
+                        # draw player
                         try:
-                            p.draw(self.screen)
+                            self.player.draw(world)
                         except Exception:
                             pass
-                    # draw player (on top)
-                    try:
-                        self.player.draw(self.screen)
-                    except Exception:
-                        pass
-                    # particles
-                    try:
-                        # particles are drawn during their update; call update with no effect if needed
-                        pass
-                    except Exception:
-                        pass
-                    # HUD
-                    try:
-                        self.draw_hud(self.screen)
-                    except Exception:
-                        pass
+                        # draw particles into the world so they shake with the scene
+                        try:
+                            self.particles.update(world, WIDTH, HEIGHT)
+                        except Exception:
+                            pass
+
+                        # compute offset: decay magnitude as timer decreases for smoother feel
+                        try:
+                            base = max(1.0, 18.0)
+                            factor = min(1.0, float(self.shake_timer) / base)
+                            mag = int(round(getattr(self, 'shake_magnitude', 0) * factor))
+                            if mag < 1:
+                                off_x = off_y = 0
+                            else:
+                                off_x = random.randint(-mag, mag)
+                                off_y = random.randint(-mag, mag)
+                        except Exception:
+                            off_x = off_y = 0
+
+                        # blit shaken world to main screen
+                        try:
+                            self.screen.blit(world, (off_x, off_y))
+                        except Exception:
+                            # fallback: draw world normally
+                            try:
+                                self.screen.blit(world, (0,0))
+                            except Exception:
+                                pass
+                    else:
+                        # normal non-shaken drawing (draw directly to main screen)
+                        try:
+                            self.orb.draw(self.screen)
+                        except Exception:
+                            pass
+                        for ob in list(getattr(self, 'obstacles', [])):
+                            try:
+                                ob.draw(self.screen)
+                            except Exception:
+                                pass
+                        for p in list(getattr(self, 'projectiles', [])):
+                            try:
+                                p.draw(self.screen)
+                            except Exception:
+                                pass
+                        try:
+                            self.player.draw(self.screen)
+                        except Exception:
+                            pass
+                        # particles will be drawn below for the non-shake case
                 except Exception:
                     pass
 
+                # HUD should remain stable on the screen (not shaken)
+                try:
+                    self.draw_hud(self.screen)
+                except Exception:
+                    pass
+
+            # --- GAME OVER: draw on main screen (no shake) ---
             elif self.game_state == STATE_GAMEOVER:
                 try:
                     go = self.large_font.render("Game Over", True, (255,80,80))
@@ -565,10 +700,21 @@ class Game:
                 except Exception:
                     pass
 
-            # ensure particles are drawn on top
+            # If not shook already in PLAYING branch, draw particles on top (for non-shake case)
             try:
-                # particle system draws during update; call update with current surface to render remaining particles
-                self.particles.update(self.screen, WIDTH, HEIGHT)
+                if not (self.game_state == STATE_PLAYING and getattr(self, 'shake_timer', 0) > 0):
+                    # particles are drawn here for the cases where we didn't render them into the shaken world
+                    self.particles.update(self.screen, WIDTH, HEIGHT)
+            except Exception:
+                pass
+
+            # always draw the sound icon on top so it's visible and clickable
+            try:
+                try:
+                    if hasattr(self, 'draw_sound_icon'):
+                        self.draw_sound_icon()
+                except Exception:
+                    pass
             except Exception:
                 pass
         except Exception:
@@ -1142,6 +1288,60 @@ class Game:
                             elif opt.lower().startswith('quit'):
                                 self.request_quit = True
                             return
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def toggle_music(self):
+        """Toggle master audio (music + sfx). Saves/restores previous volumes for a smooth mute/unmute.
+        handle_mouse already calls this when the sound_icon_rect is clicked.
+        """
+        try:
+            # flip state
+            self.music_enabled = not getattr(self, 'music_enabled', True)
+            if not hasattr(self, '_saved_volumes'):
+                self._saved_volumes = {}
+            # music
+            try:
+                if not self.music_enabled:
+                    # save current music volume then mute
+                    try:
+                        self._saved_volumes['music'] = pygame.mixer.music.get_volume()
+                    except Exception:
+                        self._saved_volumes['music'] = getattr(self, 'music_volume', 0.3)
+                    try:
+                        pygame.mixer.music.set_volume(0)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        pygame.mixer.music.set_volume(self._saved_volumes.get('music', getattr(self, 'music_volume', 0.3)))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # sound effects: orb_sound, navigate_sound, confirm_sound
+            for name in ('orb_sound', 'navigate_sound', 'confirm_sound'):
+                try:
+                    snd = getattr(self, name, None)
+                    if snd is None:
+                        continue
+                    key = f'sfx_{name}'
+                    if not self.music_enabled:
+                        try:
+                            self._saved_volumes[key] = snd.get_volume()
+                        except Exception:
+                            self._saved_volumes[key] = 1.0
+                        try:
+                            snd.set_volume(0)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            snd.set_volume(self._saved_volumes.get(key, 1.0))
+                        except Exception:
+                            pass
                 except Exception:
                     pass
         except Exception:
